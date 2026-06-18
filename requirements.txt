@@ -1,0 +1,5 @@
+FinMind
+matplotlib
+numpy
+pandas
+python-dotenv

@@ -1,0 +1,22 @@
+# 機密：FinMind token，切勿提交
+.env
+
+# 資料快取
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Node（若有）
+node_modules/
+
+# OS / 編輯器
+.DS_Store
+.vscode/
+.idea/
+
+# 執行 log
+run_log.txt
