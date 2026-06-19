@@ -1162,6 +1162,85 @@ def stoploss_grid(regions_map: dict, events: pd.DataFrame, data: dict,
                         "停損 grid（三指數AND 開低走高×8%×小型×高周轉）", out_path)
 
 
+def threshold_grid_with_filters(regions_map: dict, all_gains: pd.DataFrame,
+                                suspension_df: pd.DataFrame, data: dict,
+                                out_path: str) -> None:
+    """強勢股漲幅門檻 5%~10% grid（含市值≤100億 + 周轉率≥0.5% 濾網）。
+
+    固定：三指數AND 開低走高、可現股當沖賣、停損 8%、滑價 0.15%。
+    對每個門檻：取漲幅 [門檻, 9.5%] 的強勢股 → 套市值/周轉率濾網 → 隔日放空回測。
+
+    Args:
+        regions_map: dict['TX'/'TAIEX'/'TPEx' -> 每日 region 序列]。
+        all_gains: build_all_gains 輸出（未過濾）。
+        suspension_df: 暫停當沖名單。
+        data: 個股 OHLCV 字典。
+        out_path: 雙軸折線圖路徑。
+    """
+    kdzg = {name: set(r[r == "開低走高"].index)
+            for name, r in regions_map.items()}
+    sig_dates = set.intersection(*[kdzg[m] for m in SIGNAL_COMBO])
+
+    thresholds = [0.05, 0.06, 0.07, 0.08, 0.09, 0.10]
+
+    # 各門檻事件（三指數AND 開低走高、可當沖），並蒐集所有涉及個股
+    events_by_thr = {}
+    all_sids = set()
+    for thr in thresholds:
+        ev = filter_day_trading_eligible(strong_events(all_gains, thr),
+                                         suspension_df)
+        ev = ev[ev["date"].isin(sig_dates)].copy()
+        events_by_thr[thr] = ev
+        all_sids.update(ev["stock_id"].unique())
+
+    # 一次載入所有涉及個股的市值，建周轉率序列
+    sids = sorted(all_sids)
+    mv = load_market_value_multiple(sids, START_DATE, END_DATE)
+    turn = {sid: calc_turnover(data[sid], mv[sid])
+            for sid in sids if sid in mv and sid in data}
+
+    def _apply_filters(ev: pd.DataFrame) -> pd.DataFrame:
+        if ev.empty:
+            return ev[["date", "stock_id"]]
+        mv_vals, turn_vals = [], []
+        for _, row in ev.iterrows():
+            sid, d = row["stock_id"], row["date"]
+            m = mv.get(sid)
+            mv_vals.append(float(m.loc[d, "market_value"])
+                           if (m is not None and d in m.index) else np.nan)
+            ts = turn.get(sid)
+            turn_vals.append(float(ts.loc[d])
+                             if (ts is not None and d in ts.index) else np.nan)
+        ev = ev.copy()
+        ev["market_value"] = mv_vals
+        ev["turnover"] = turn_vals
+        ev = ev[(ev["market_value"] <= MARKET_VALUE_THRESHOLD)
+                & (ev["turnover"] >= TURNOVER_THRESHOLD)]
+        return ev[["date", "stock_id"]]
+
+    print("\n" + "=" * 78)
+    print("強勢股門檻 grid（三指數AND 開低走高 × 市值≤100億 × 周轉率≥0.5%，停損8%+滑價0.15%）")
+    print("=" * 78)
+    print(f"{'門檻':>6} | {'交易筆數':>6} | {'總損益':>11} | {'勝率':>7} | "
+          f"{'Sharpe':>8} | {'最大回撤':>11}")
+    print("-" * 66)
+
+    labels, sharpes, totals = [], [], []
+    for thr in thresholds:
+        fev = _apply_filters(events_by_thr[thr])
+        trades = build_event_trades(fev, data).sort_values("date")
+        s = compute_stats(trades)
+        wr = f"{s['win_rate']:.2%}" if s["n_trades"] else "-"
+        print(f"{thr:>6.0%} | {s['n_trades']:>6} | {s['total_pnl']:>11,.0f} | "
+              f"{wr:>7} | {s['sharpe']:>8.4f} | {s['max_drawdown']:>11,.0f}")
+        labels.append(f"{thr:.0%}")
+        sharpes.append(s["sharpe"])
+        totals.append(s["total_pnl"])
+
+    plot_dual_axis_line(labels, sharpes, totals,
+                        "強勢股門檻 grid（三指數AND 開低走高×小型×高周轉）", out_path)
+
+
 def main() -> None:
     """主流程：建立各門檻強勢股事件，逐一指數回測並輸出摘要與圖。"""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
